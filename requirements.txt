@@ -1,0 +1,15 @@
+pandas
+numpy
+matplotlib
+seaborn
+scikit-learn
+xgboost
+shap
+openpyxl
+itables
+jinja2
+plotly
+nbformat
+nltk
+gradio
+joblib
