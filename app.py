@@ -17,6 +17,7 @@ tfidf = joblib.load('model_artifacts/tfidf.pkl')
 expensive_centroid = joblib.load('model_artifacts/expensive_centroid.pkl')
 cheap_centroid = joblib.load('model_artifacts/cheap_centroid.pkl')
 q_hat = joblib.load('model_artifacts/q_hat.pkl')
+model_feature_columns = joblib.load('model_artifacts/model_feature_columns.pkl')
 
 # --- Dropdown options ---
 COMPANIES = [
@@ -43,9 +44,15 @@ SUB_AREAS = [
 ]
 
 
+def normalize_text_value(value):
+    """Mirror the notebook's text normalization for inference-time inputs."""
+    return ' '.join(str(value or '').lower().strip().split())
+
+
 def compute_desc_price_signal(description):
     """Compute description price signal using TF-IDF similarity."""
-    if not description or description.strip() == '':
+    description = normalize_text_value(description)
+    if description == '':
         return 0.0
     tfidf_vec = tfidf.transform([description])
     sim_expensive = cosine_similarity(tfidf_vec, expensive_centroid.reshape(1, -1))[0][0]
@@ -77,15 +84,18 @@ def predict(area_sqft, bedrooms, swimming_pool, mall, hospital, school,
     # Log transform area
     area_log = np.log1p(area_sqft)
 
+    company_name = normalize_text_value(company_name)
+    sub_area = normalize_text_value(sub_area)
+
     # Target encode company and sub_area
     company_encoded = te_company.transform(
-        np.array([[company_name]])
+        pd.DataFrame({'company_name': [company_name]})
     )[0][0]
     sub_area_encoded = te_sub_area.transform(
-        np.array([[sub_area]])
+        pd.DataFrame({'sub_area': [sub_area]})
     )[0][0]
 
-    # Build feature vector (same column order as training)
+    # Build feature vector using the saved training schema from the notebook.
     features = pd.DataFrame([{
         'swimming_pool': pool,
         'no_of_bedrooms': bedrooms,
@@ -95,7 +105,7 @@ def predict(area_sqft, bedrooms, swimming_pool, mall, hospital, school,
         'property_area_log': area_log,
         'te_company_name': company_encoded,
         'te_sub_area': sub_area_encoded,
-    }])
+    }]).reindex(columns=model_feature_columns, fill_value=0)
 
     # Scale (keep as DataFrame to preserve feature names)
     features_scaled = pd.DataFrame(scaler.transform(features), columns=features.columns)
