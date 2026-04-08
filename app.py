@@ -170,82 +170,550 @@ def predict(area_sqft, bedrooms, swimming_pool, mall, hospital, school,
     return result
 
 
+# --- Feature-name labels for the waterfall chart ---
+FEATURE_LABELS = {
+    'swimming_pool': 'Swimming Pool',
+    'no_of_bedrooms': 'Bedrooms',
+    'neighbourhood_amenities': 'Neighbourhood Amenities',
+    'property_amenities': 'Property Amenities',
+    'desc_price_signal': 'Description Quality',
+    'property_area_log': 'Property Area',
+    'te_company_name': 'Builder',
+    'te_sub_area': 'Location',
+}
+
+import re as _re
+import html as _html
+
+
+def _yn(val):
+    """Convert messy yes/no column to bool."""
+    return str(val).strip().lower().startswith('y')
+
+
+def _extract_bedrooms(val):
+    """Extract bedroom count from property type string."""
+    s = _re.sub(r'[a-zA-Z\s]', '', str(val).strip())
+    if '+' in s:
+        parts = s.split('+')
+        return sum(float(p) for p in parts if p)
+    try:
+        return float(s)
+    except ValueError:
+        return 0
+
+
+def _get_contributions(features_scaled, pred_median):
+    """Compute per-feature contributions in lakhs that sum exactly to pred_median.
+
+    In log-space the prediction is: log_pred = intercept + sum(w_i * x_i).
+    Each feature's share of the predicted price is:
+        share_i = pred_median * (w_i * x_i) / log_pred
+    The intercept's share is distributed proportionally across features
+    (weighted by |share_i|) so contributions sum to pred_median with no
+    leftover baseline.
+    """
+    coef = qr_median.coef_
+    intercept = qr_median.intercept_
+    scaled_vals = features_scaled.values[0]
+
+    log_pred = intercept + sum(coef[i] * scaled_vals[i]
+                               for i in range(len(coef)))
+    if abs(log_pred) < 1e-9:
+        return []
+
+    # Each feature's proportional share of the predicted price
+    raw = []
+    for i, col in enumerate(model_feature_columns):
+        share = pred_median * (coef[i] * scaled_vals[i]) / log_pred
+        raw.append((FEATURE_LABELS.get(col, col), share))
+
+    # Intercept's share — distribute among features by |share|
+    intercept_share = pred_median * (intercept / log_pred)
+    abs_total = sum(abs(s) for _, s in raw)
+    if abs_total < 1e-9:
+        return []
+
+    contributions = []
+    for label, share in raw:
+        adjusted = share + intercept_share * (abs(share) / abs_total)
+        if abs(adjusted) >= 0.1:
+            contributions.append((label, adjusted))
+
+    contributions.sort(key=lambda x: abs(x[1]), reverse=True)
+    return contributions
+
+
+def _build_gap_card(listing_price, pred_median, pred_lower, pred_upper):
+    """D: Highlighted gap card showing listed vs estimated."""
+    gap = listing_price - pred_median
+    abs_gap = abs(gap)
+
+    if listing_price > pred_upper:
+        gap_class = 'gap-over'
+        gap_icon = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>'
+        gap_msg = f"Nothing in this property's features justifies a {abs_gap:.0f}L premium over comparable listings."
+    elif listing_price < pred_lower:
+        gap_class = 'gap-under'
+        gap_icon = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>'
+        gap_msg = f"Priced {abs_gap:.0f}L below the estimated value &mdash; worth investigating why."
+    else:
+        gap_class = 'gap-fair'
+        gap_icon = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>'
+        gap_msg = "This listing is priced within the expected range for its features."
+
+    sign = "+" if gap > 0 else ""
+
+    return (
+        f"<div class='gap-card {gap_class}'>"
+        f"<div class='gap-numbers'>"
+        f"<div class='gap-col'><div class='gap-label'>Listed</div><div class='gap-value'>{listing_price:.0f}L</div></div>"
+        f"<div class='gap-arrow'>&rarr;</div>"
+        f"<div class='gap-col'><div class='gap-label'>Estimated</div><div class='gap-value'>{pred_median:.0f}L</div></div>"
+        f"<div class='gap-arrow'>=</div>"
+        f"<div class='gap-col'><div class='gap-label'>Gap</div><div class='gap-value gap-diff'>{sign}{gap:.0f}L</div></div>"
+        f"</div>"
+        f"<div class='gap-msg'>{gap_icon} {gap_msg}</div>"
+        f"</div>"
+    )
+
+
+def _build_sentence_explanation(contributions, pred_median):
+    """C: Natural language explanation from top contributions."""
+    positives = [(l, v) for l, v in contributions if v > 0]
+    negatives = [(l, v) for l, v in contributions if v < 0]
+
+    parts = []
+    parts.append(f"This property is estimated at <strong>{pred_median:.0f}L</strong>.")
+
+    if positives:
+        top_pos = positives[:3]
+        drivers = ', '.join(f"{l} (+{v:.0f}L)" for l, v in top_pos)
+        parts.append(f"The main price drivers are <strong>{drivers}</strong>.")
+
+    if negatives:
+        top_neg = negatives[:2]
+        reducers = ', '.join(f"{l} ({v:.0f}L)" for l, v in top_neg)
+        parts.append(f"Factors pulling the price down: <strong>{reducers}</strong>.")
+
+    return f"<div class='explain-sentence'>{' '.join(parts)}</div>"
+
+
+def _build_contrib_table(contributions, pred_median):
+    """B: Clean +/- table of all feature contributions."""
+    rows = ""
+    for label, lakhs in contributions:
+        if lakhs >= 0:
+            badge_class = 'contrib-pos'
+            sign = '+'
+        else:
+            badge_class = 'contrib-neg'
+            sign = ''
+        rows += (
+            f"<tr>"
+            f"<td class='contrib-feature'>{label}</td>"
+            f"<td class='contrib-impact'><span class='contrib-badge {badge_class}'>{sign}{lakhs:.1f}L</span></td>"
+            f"</tr>"
+        )
+
+    return (
+        f"<div class='contrib-section'>"
+        f"<div class='contrib-title'>Feature Breakdown</div>"
+        f"<table class='contrib-table'>"
+        f"<tr class='contrib-header'><td>Feature</td><td>Impact</td></tr>"
+        f"{rows}"
+        f"<tr class='contrib-footer'>"
+        f"<td class='contrib-feature'>Estimated Price</td>"
+        f"<td class='contrib-impact'><span class='contrib-badge contrib-total'>{pred_median:.1f}L</span></td>"
+        f"</tr>"
+        f"</table>"
+        f"</div>"
+    )
+
+
+def _build_stacked_waterfall(contributions, pred_median):
+    """A: True stacking waterfall — each bar starts where the previous ended.
+
+    Contributions now sum to pred_median (no separate baseline), so
+    the waterfall builds from 0 to estimated price.
+    """
+    # Walk contributions, tracking running total from 0.
+    running = 0.0
+    steps = []
+    for label, lakhs in contributions:
+        start = running
+        running += lakhs
+        steps.append((label, start, running, lakhs))
+
+    # Axis: 0 to a bit beyond the max position seen
+    all_vals = [0.0] + [s[1] for s in steps] + [s[2] for s in steps]
+    axis_min = min(all_vals)
+    axis_max = max(all_vals) * 1.08
+    axis_span = axis_max - axis_min
+    if axis_span < 1:
+        axis_span = 1
+
+    def to_pct(val):
+        return ((val - axis_min) / axis_span) * 100
+
+    rows = ""
+    for i, (label, start, end, lakhs_val) in enumerate(steps):
+        left = to_pct(min(start, end))
+        width = abs(to_pct(end) - to_pct(start))
+        width = max(width, 0.5)
+
+        sign = '+' if lakhs_val >= 0 else ''
+        val_text = f"{sign}{lakhs_val:.0f}L"
+        bar_class = 'sw-bar-pos' if lakhs_val >= 0 else 'sw-bar-neg'
+        val_class = 'sw-val-pos' if lakhs_val >= 0 else 'sw-val-neg'
+
+        connector = ""
+        if i > 0:
+            prev_end_pct = to_pct(steps[i - 1][2])
+            connector = f"<div class='sw-connector' style='left:{prev_end_pct:.1f}%'></div>"
+
+        rows += (
+            f"<div class='sw-row'>"
+            f"<div class='sw-label'>{label}</div>"
+            f"<div class='sw-track'>"
+            f"{connector}"
+            f"<div class='sw-bar {bar_class}' style='left:{left:.1f}%;width:{width:.1f}%'></div>"
+            f"</div>"
+            f"<div class='sw-val {val_class}'>{val_text}</div>"
+            f"</div>"
+        )
+
+    # Total row — full bar from 0 to estimated price
+    rows += (
+        f"<div class='sw-row sw-total-row'>"
+        f"<div class='sw-label'>Estimated</div>"
+        f"<div class='sw-track'>"
+        f"<div class='sw-bar sw-bar-total' style='left:{to_pct(0):.1f}%;width:{to_pct(pred_median) - to_pct(0):.1f}%'></div>"
+        f"</div>"
+        f"<div class='sw-val sw-val-total'>{pred_median:.0f}L</div>"
+        f"</div>"
+    )
+
+    return (
+        f"<div class='sw-section'>"
+        f"<div class='sw-title'>Price Build-Up</div>"
+        f"<div class='sw-chart'>{rows}</div>"
+        f"</div>"
+    )
+
+
+def _build_price_analysis(features_scaled, listing_price, pred_lower, pred_median, pred_upper):
+    """Build all four explanation components for a property."""
+    contributions = _get_contributions(features_scaled, pred_median)
+
+    gap_card = _build_gap_card(listing_price, pred_median, pred_lower, pred_upper)
+    sentence = _build_sentence_explanation(contributions, pred_median)
+    waterfall = _build_stacked_waterfall(contributions, pred_median)
+    table = _build_contrib_table(contributions, pred_median)
+
+    return f"{gap_card}{sentence}{waterfall}{table}"
+
+
+def _build_verdict(listing_price, pred_lower, pred_median, pred_upper):
+    """Return (css_class, short_label) for a listing price vs predicted range."""
+    range_width = pred_upper - pred_lower
+    if listing_price < pred_lower:
+        return 'tag-good', 'Good Deal'
+    elif listing_price > pred_upper:
+        return 'tag-overpriced', 'Overpriced'
+    elif listing_price > pred_upper - range_width * 0.25:
+        return 'tag-caution', 'Near Upper End'
+    else:
+        return 'tag-fair', 'Fair Price'
+
+
+def _build_range_bar(listing_price, pred_lower, pred_median, pred_upper):
+    """Build range bar HTML snippet."""
+    bar_min = pred_lower * 0.85
+    bar_max = pred_upper * 1.15
+    bar_span = bar_max - bar_min
+    lower_pct = ((pred_lower - bar_min) / bar_span) * 100
+    upper_pct = ((pred_upper - bar_min) / bar_span) * 100
+    median_pct = ((pred_median - bar_min) / bar_span) * 100
+    marker_pct = max(0, min(100, ((listing_price - bar_min) / bar_span) * 100))
+
+    return (
+        f"<div class='range-bar-container'><div class='range-bar-track'>"
+        f"<div class='range-bar-fill' style='left:{lower_pct:.1f}%;width:{upper_pct - lower_pct:.1f}%;'></div>"
+        f"<div class='range-bar-median' style='left:{median_pct:.1f}%;'></div>"
+        f"<div class='range-bar-marker' style='left:{marker_pct:.1f}%;'></div>"
+        f"</div><div class='range-bar-labels'>"
+        f"<span>{pred_lower:.1f}L</span>"
+        f"<span style='position:absolute;left:{median_pct:.1f}%;transform:translateX(-50%)'>{pred_median:.1f}L</span>"
+        f"<span>{pred_upper:.1f}L</span>"
+        f"</div></div>"
+    )
+
+
+# --- Pre-compute catalog data ---
+def _load_catalog():
+    """Load dataset, run predictions on every row, return list of dicts."""
+    raw = pd.read_excel(
+        os.path.join(os.path.dirname(__file__), 'Pune_Real_Estate_Data.xlsx')
+    )
+    catalog = []
+    for _, row in raw.iterrows():
+        # Parse price
+        try:
+            price = float(str(row['Price in lakhs']).strip())
+        except (ValueError, TypeError):
+            continue
+
+        area_raw = str(row['Property Area in Sq. Ft.']).strip()
+        # Take midpoint if range
+        nums = _re.findall(r'[\d.]+', area_raw)
+        if not nums:
+            continue
+        area_sqft = sum(float(n) for n in nums) / len(nums)
+
+        beds = _extract_bedrooms(row['Propert Type'])
+        sub = normalize_text_value(row['Sub-Area'])
+        company = normalize_text_value(row['Company Name'])
+        desc = normalize_text_value(row.get('Description', ''))
+        township = str(row.get('TownShip Name/ Society Name', '') or '').strip()
+
+        pool = 1 if _yn(row.get('Swimming Pool', 'no')) else 0
+        club = 1 if _yn(row.get('ClubHouse', 'no')) else 0
+        park = 1 if _yn(row.get('Park / Jogging track', 'no')) else 0
+        gym = 1 if _yn(row.get('Gym', 'no')) else 0
+        mall_v = 1 if _yn(row.get('Mall in TownShip', 'no')) else 0
+        hospital_v = 1 if _yn(row.get('Hospital in TownShip', 'no')) else 0
+        school_v = 1 if _yn(row.get('School / University in Township ', 'no')) else 0
+
+        neighbourhood_amenities = mall_v + hospital_v + school_v
+        property_amenities = club + park + gym
+        desc_signal = compute_desc_price_signal(desc)
+        area_log = np.log1p(area_sqft)
+
+        company_encoded = te_company.transform(pd.DataFrame({'company_name': [company]}))[0][0]
+        sub_area_encoded = te_sub_area.transform(pd.DataFrame({'sub_area': [sub]}))[0][0]
+
+        features = pd.DataFrame([{
+            'swimming_pool': pool,
+            'no_of_bedrooms': beds,
+            'neighbourhood_amenities': neighbourhood_amenities,
+            'property_amenities': property_amenities,
+            'desc_price_signal': desc_signal,
+            'property_area_log': area_log,
+            'te_company_name': company_encoded,
+            'te_sub_area': sub_area_encoded,
+        }]).reindex(columns=model_feature_columns, fill_value=0)
+
+        features_scaled = pd.DataFrame(scaler.transform(features), columns=features.columns)
+
+        pred_lower = float(np.expm1(qr_lower.predict(features_scaled)[0] - q_hat))
+        pred_median = float(np.expm1(qr_median.predict(features_scaled)[0]))
+        pred_upper = float(np.expm1(qr_upper.predict(features_scaled)[0] + q_hat))
+
+        amenity_icons = []
+        if pool:
+            amenity_icons.append('Pool')
+        if club:
+            amenity_icons.append('Club')
+        if park:
+            amenity_icons.append('Park')
+        if gym:
+            amenity_icons.append('Gym')
+        if mall_v:
+            amenity_icons.append('Mall')
+        if hospital_v:
+            amenity_icons.append('Hospital')
+        if school_v:
+            amenity_icons.append('School')
+
+        catalog.append({
+            'price': price,
+            'area': area_sqft,
+            'beds': beds,
+            'sub_area': sub,
+            'company': company,
+            'township': township,
+            'desc': desc,
+            'amenities': amenity_icons,
+            'pred_lower': pred_lower,
+            'pred_median': pred_median,
+            'pred_upper': pred_upper,
+            'features_scaled': features_scaled,
+            'property_type': str(row['Propert Type']).strip(),
+        })
+
+    return catalog
+
+
+CATALOG = _load_catalog()
+
+# Collect unique sub-areas and BHK types for filters
+CATALOG_SUB_AREAS = sorted(set(p['sub_area'] for p in CATALOG))
+CATALOG_BHKS = sorted(set(p['property_type'].upper() for p in CATALOG))
+
+
+def build_catalog_html(sub_area_filter, bhk_filter, sort_by):
+    """Build the full catalog HTML from pre-computed data."""
+    items = CATALOG
+
+    # Filter
+    if sub_area_filter and sub_area_filter != 'All':
+        items = [p for p in items if p['sub_area'] == normalize_text_value(sub_area_filter)]
+    if bhk_filter and bhk_filter != 'All':
+        items = [p for p in items if p['property_type'].upper() == bhk_filter.upper()]
+
+    # Sort
+    if sort_by == 'Price: Low to High':
+        items = sorted(items, key=lambda p: p['price'])
+    elif sort_by == 'Price: High to Low':
+        items = sorted(items, key=lambda p: p['price'], reverse=True)
+    elif sort_by == 'Best Deals First':
+        items = sorted(items, key=lambda p: p['price'] - p['pred_median'])
+    else:
+        items = sorted(items, key=lambda p: p['area'])
+
+    if not items:
+        return "<div class='empty-state'><div class='empty-state-text'>No properties match your filters.</div></div>"
+
+    cards = []
+    for i, p in enumerate(items):
+        tag_class, tag_label = _build_verdict(p['price'], p['pred_lower'], p['pred_median'], p['pred_upper'])
+        analysis = _build_price_analysis(p['features_scaled'], p['price'], p['pred_lower'], p['pred_median'], p['pred_upper'])
+
+        amenity_tags = ''.join(f"<span class='amenity-tag'>{a}</span>" for a in p['amenities'])
+
+        desc_short = _html.escape(p['desc'][:150] + ('...' if len(p['desc']) > 150 else '')) if p['desc'] else ''
+
+        card = f"""<div class='catalog-card' onclick="this.classList.toggle('expanded')">
+  <div class='card-header'>
+    <div class='card-main'>
+      <div class='card-title-row'>
+        <span class='card-title'>{_html.escape(p['township'] or p['company'].title())}</span>
+        <span class='card-tag {tag_class}'>{tag_label}</span>
+      </div>
+      <div class='card-subtitle'>{p['sub_area'].title()} &middot; {p['property_type'].upper()} &middot; {p['area']:.0f} sq ft</div>
+      <div class='card-amenities'>{amenity_tags}</div>
+    </div>
+    <div class='card-price-col'>
+      <div class='card-listed-price'>{p['price']:.0f}L</div>
+      <div class='card-est-price'>Est. {p['pred_median']:.0f}L</div>
+    </div>
+  </div>
+  <div class='card-expand-hint'>Click to see price breakdown</div>
+  <div class='card-detail'>
+    <div class='card-desc'>{desc_short}</div>
+    {analysis}
+  </div>
+</div>"""
+        cards.append(card)
+
+    count_html = f"<div class='catalog-count'>{len(items)} properties</div>"
+    return count_html + "\n".join(cards)
+
+
 # --- Load CSS from file ---
 with open(os.path.join(os.path.dirname(__file__), 'style.css')) as f:
     CUSTOM_CSS = f.read()
 
 # --- Gradio UI ---
+EMPTY_STATE = (
+    "<div class='empty-state'>"
+    "<svg width='48' height='48' viewBox='0 0 24 24' fill='none' stroke='#b0c4de' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round' style='margin-bottom: 12px;'>"
+    "<path d='M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z'/>"
+    "<polyline points='9 22 9 12 15 12 15 22'/>"
+    "</svg>"
+    "<div class='empty-state-text'>Fill in property details and choose an action</div>"
+    "</div>"
+)
+
 with gr.Blocks(title="Pillow: Price Discovery for Pune Real Estate") as app:
     gr.HTML("<link rel='preconnect' href='https://fonts.googleapis.com'><link rel='preconnect' href='https://fonts.gstatic.com' crossorigin>")
 
     gr.HTML("<h1 style='font-family: Inter, sans-serif; font-size: 2.2rem; font-weight: 700; text-align: center; color: #1d4ed8; margin: 0 0 4px;'>Pillow</h1>")
     gr.HTML("<p style='font-family: Inter, sans-serif; font-size: 1rem; text-align: center; color: #666; margin: 0 0 24px;'>Estimate fair value for Pune real estate</p>")
 
-    with gr.Row(elem_classes=["main-layout"]):
-        # Left column: stepped inputs
-        with gr.Column(scale=3, elem_classes=["input-column"]):
-            with gr.Column(elem_classes=["card-panel"]):
-                gr.HTML("<div class='step-header'><span class='step-badge'>1</span><div class='section-title'><svg viewBox='0 0 24 24'><path d='M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z'/><polyline points='9 22 9 12 15 12 15 22'/></svg>Property Details</div></div>")
-                area_sqft = gr.Slider(200, 3000, value=900, step=1, label="Property Area (sq ft)")
-                bedrooms = gr.Slider(1, 6, value=2, step=0.5, label="Number of Bedrooms")
-                with gr.Row():
-                    company_name = gr.Dropdown(COMPANIES, label="Builder / Company", value='mantra properties', elem_classes=["styled-dropdown"])
-                    sub_area = gr.Dropdown(SUB_AREAS, label="Sub Area", value='baner', elem_classes=["styled-dropdown"])
+    with gr.Tabs(elem_classes=["pillow-tabs"]):
 
-            with gr.Column(elem_classes=["card-panel"]):
-                gr.HTML("<div class='step-header'><span class='step-badge'>2</span><div class='section-title'><svg viewBox='0 0 24 24'><rect x='3' y='3' width='7' height='7'/><rect x='14' y='3' width='7' height='7'/><rect x='14' y='14' width='7' height='7'/><rect x='3' y='14' width='7' height='7'/></svg>Amenities</div></div>")
-                with gr.Row(equal_height=True, elem_classes=["amenity-row"]):
-                    swimming_pool = gr.Checkbox(label="Swimming Pool")
-                    clubhouse = gr.Checkbox(label="Clubhouse")
-                    park_jogging_track = gr.Checkbox(label="Park / Jogging Track")
-                    gym_check = gr.Checkbox(label="Gym")
-                with gr.Row(equal_height=True, elem_classes=["amenity-row"]):
-                    school = gr.Checkbox(label="School / University")
-                    mall = gr.Checkbox(label="Mall in Township")
-                    hospital = gr.Checkbox(label="Hospital in Township")
-                    select_all = gr.Checkbox(label="Select All")
+        # ==================== SELLER TAB ====================
+        with gr.Tab("Seller", elem_id="seller-tab"):
+            with gr.Row(elem_classes=["main-layout"]):
+                with gr.Column(scale=3, elem_classes=["input-column"]):
+                    with gr.Column(elem_classes=["card-panel"]):
+                        gr.HTML("<div class='step-header'><span class='step-badge'>1</span><div class='section-title'><svg viewBox='0 0 24 24'><path d='M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z'/><polyline points='9 22 9 12 15 12 15 22'/></svg>Property Details</div></div>")
+                        area_sqft = gr.Slider(200, 3000, value=900, step=1, label="Property Area (sq ft)")
+                        bedrooms = gr.Slider(1, 6, value=2, step=0.5, label="Number of Bedrooms")
+                        with gr.Row():
+                            company_name = gr.Dropdown(COMPANIES, label="Builder / Company", value='mantra properties', elem_classes=["styled-dropdown"])
+                            sub_area = gr.Dropdown(SUB_AREAS, label="Sub Area", value='baner', elem_classes=["styled-dropdown"])
 
-            with gr.Column(elem_classes=["card-panel"]):
-                gr.HTML("<div class='step-header'><span class='step-badge'>3</span><div class='section-title'><svg viewBox='0 0 24 24'><path d='M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z'/><polyline points='14 2 14 8 20 8'/><line x1='16' y1='13' x2='8' y2='13'/><line x1='16' y1='17' x2='8' y2='17'/><polyline points='10 9 9 9 8 9'/></svg>Description</div></div>")
-                description = gr.Textbox(
-                    label="Property Description",
-                    placeholder="This is a luxurious property boasting 4.5 bedrooms in a tall building with a river front view.",
-                    lines=3,
-                )
+                    with gr.Column(elem_classes=["card-panel"]):
+                        gr.HTML("<div class='step-header'><span class='step-badge'>2</span><div class='section-title'><svg viewBox='0 0 24 24'><rect x='3' y='3' width='7' height='7'/><rect x='14' y='3' width='7' height='7'/><rect x='14' y='14' width='7' height='7'/><rect x='3' y='14' width='7' height='7'/></svg>Amenities</div></div>")
+                        with gr.Row(equal_height=True, elem_classes=["amenity-row"]):
+                            swimming_pool = gr.Checkbox(label="Swimming Pool")
+                            clubhouse = gr.Checkbox(label="Clubhouse")
+                            park_jogging_track = gr.Checkbox(label="Park / Jogging Track")
+                            gym_check = gr.Checkbox(label="Gym")
+                        with gr.Row(equal_height=True, elem_classes=["amenity-row"]):
+                            school = gr.Checkbox(label="School / University")
+                            mall = gr.Checkbox(label="Mall in Township")
+                            hospital = gr.Checkbox(label="Hospital in Township")
+                            select_all = gr.Checkbox(label="Select All")
 
-            with gr.Column(elem_classes=["card-panel"]):
-                gr.HTML("<div class='step-header'><span class='step-badge'>4</span><div class='section-title'><svg viewBox='0 0 24 24'><circle cx='12' cy='12' r='10'/><polyline points='12 6 12 12 16 14'/></svg>Choose an Action</div></div>")
-                with gr.Row(equal_height=True):
-                    with gr.Column(scale=1, elem_classes=["action-card"]):
-                        gr.HTML("<div class='action-label'>Get the model's estimated price range</div>")
-                        gr.HTML("<div class='action-spacer'></div>")
-                        estimate_btn = gr.Button("Estimate Range", variant="primary", elem_classes=["gen-btn"])
-
-                    with gr.Column(scale=1, elem_classes=["action-card"]):
-                        gr.HTML("<div class='action-label'>Enter your price and see if it's fair</div>")
-                        listing_price = gr.Number(
-                            label="Your Price (in lakhs)",
-                            value=None,
-                            minimum=0,
+                    with gr.Column(elem_classes=["card-panel"]):
+                        gr.HTML("<div class='step-header'><span class='step-badge'>3</span><div class='section-title'><svg viewBox='0 0 24 24'><path d='M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z'/><polyline points='14 2 14 8 20 8'/><line x1='16' y1='13' x2='8' y2='13'/><line x1='16' y1='17' x2='8' y2='17'/><polyline points='10 9 9 9 8 9'/></svg>Description</div></div>")
+                        description = gr.Textbox(
+                            label="Property Description",
+                            placeholder="This is a luxurious property boasting 4.5 bedrooms in a tall building with a river front view.",
+                            lines=3,
                         )
-                        check_btn = gr.Button("Check My Price", variant="secondary", elem_classes=["gen-btn", "check-btn"])
 
-        # Right column: sticky result panel
-        with gr.Column(scale=2, elem_classes=["result-column"]):
-            with gr.Column(elem_classes=["result-panel"]):
-                gr.HTML("<div class='section-title' style='justify-content: center;'><svg viewBox='0 0 24 24'><line x1='12' y1='1' x2='12' y2='23'/><path d='M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6'/></svg>Estimated Price Range</div>")
-                output = gr.HTML(
-                    value=(
-                        "<div class='empty-state'>"
-                        "<svg width='48' height='48' viewBox='0 0 24 24' fill='none' stroke='#b0c4de' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round' style='margin-bottom: 12px;'>"
-                        "<path d='M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z'/>"
-                        "<polyline points='9 22 9 12 15 12 15 22'/>"
-                        "</svg>"
-                        "<div class='empty-state-text'>Fill in property details and choose an action</div>"
-                        "</div>"
-                    )
+                    with gr.Column(elem_classes=["card-panel"]):
+                        gr.HTML("<div class='step-header'><span class='step-badge'>4</span><div class='section-title'><svg viewBox='0 0 24 24'><circle cx='12' cy='12' r='10'/><polyline points='12 6 12 12 16 14'/></svg>Choose an Action</div></div>")
+                        with gr.Row(equal_height=True):
+                            with gr.Column(scale=1, elem_classes=["action-card"]):
+                                gr.HTML("<div class='action-label'>Get the model's estimated price range</div>")
+                                gr.HTML("<div class='action-spacer'></div>")
+                                estimate_btn = gr.Button("Estimate Range", variant="primary", elem_classes=["gen-btn"])
+
+                            with gr.Column(scale=1, elem_classes=["action-card"]):
+                                gr.HTML("<div class='action-label'>Enter your price and see if it's fair</div>")
+                                listing_price = gr.Number(
+                                    label="Your Price (in lakhs)",
+                                    value=None,
+                                    minimum=0,
+                                )
+                                check_btn = gr.Button("Check My Price", variant="secondary", elem_classes=["gen-btn", "check-btn"])
+
+                with gr.Column(scale=2, elem_classes=["result-column"]):
+                    with gr.Column(elem_classes=["result-panel"]):
+                        gr.HTML("<div class='section-title' style='justify-content: center;'><svg viewBox='0 0 24 24'><line x1='12' y1='1' x2='12' y2='23'/><path d='M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6'/></svg>Estimated Price Range</div>")
+                        output = gr.HTML(value=EMPTY_STATE)
+
+        # ==================== BUYER TAB ====================
+        with gr.Tab("Buyer", elem_id="buyer-tab"):
+            with gr.Row(elem_classes=["filter-bar"]):
+                b_sub_filter = gr.Dropdown(
+                    ['All'] + CATALOG_SUB_AREAS,
+                    label="Location", value='All',
+                    elem_classes=["styled-dropdown", "filter-dropdown"],
+                )
+                b_bhk_filter = gr.Dropdown(
+                    ['All'] + CATALOG_BHKS,
+                    label="Property Type", value='All',
+                    elem_classes=["styled-dropdown", "filter-dropdown"],
+                )
+                b_sort = gr.Dropdown(
+                    ['Best Deals First', 'Price: Low to High', 'Price: High to Low', 'Area'],
+                    label="Sort By", value='Best Deals First',
+                    elem_classes=["styled-dropdown", "filter-dropdown"],
                 )
 
+            catalog_output = gr.HTML(
+                value=build_catalog_html('All', 'All', 'Best Deals First'),
+                elem_classes=["catalog-container"],
+            )
+
+    # --- Seller tab wiring ---
     amenity_checkboxes = [swimming_pool, clubhouse, park_jogging_track, gym_check, school, mall, hospital]
 
     def toggle_select_all(checked):
@@ -275,6 +743,15 @@ with gr.Blocks(title="Pillow: Price Discovery for Pune Real Estate") as app:
                 description, listing_price],
         outputs=output,
     )
+
+    # --- Buyer tab wiring ---
+    buyer_filter_inputs = [b_sub_filter, b_bhk_filter, b_sort]
+    for filt in buyer_filter_inputs:
+        filt.change(
+            fn=build_catalog_html,
+            inputs=buyer_filter_inputs,
+            outputs=catalog_output,
+        )
 
     gr.HTML(
         "<div class='footer'>"
