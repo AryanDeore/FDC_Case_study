@@ -551,43 +551,20 @@ CATALOG_SUB_AREAS = sorted(set(p['sub_area'] for p in CATALOG))
 CATALOG_BHKS = sorted(set(p['property_type'].upper() for p in CATALOG))
 
 
-def build_catalog_html(sub_area_filter, bhk_filter, sort_by):
-    """Build the full catalog HTML from pre-computed data."""
-    items = CATALOG
+def _build_card_html(p, catalog_idx):
+    """Build a single catalog card."""
+    tag_class, tag_label = _build_verdict(p['price'], p['pred_lower'], p['pred_median'], p['pred_upper'])
+    analysis = _build_price_analysis(p['features_scaled'], p['price'], p['pred_lower'], p['pred_median'], p['pred_upper'])
 
-    # Filter
-    if sub_area_filter and sub_area_filter != 'All':
-        items = [p for p in items if p['sub_area'] == normalize_text_value(sub_area_filter)]
-    if bhk_filter and bhk_filter != 'All':
-        items = [p for p in items if p['property_type'].upper() == bhk_filter.upper()]
+    amenity_tags = ''.join(f"<span class='amenity-tag'>{a}</span>" for a in p['amenities'])
+    desc_short = _html.escape(p['desc'][:150] + ('...' if len(p['desc']) > 150 else '')) if p['desc'] else ''
+    title = _html.escape(p['township'] or p['company'].title())
 
-    # Sort
-    if sort_by == 'Price: Low to High':
-        items = sorted(items, key=lambda p: p['price'])
-    elif sort_by == 'Price: High to Low':
-        items = sorted(items, key=lambda p: p['price'], reverse=True)
-    elif sort_by == 'Best Deals First':
-        items = sorted(items, key=lambda p: p['price'] - p['pred_median'])
-    else:
-        items = sorted(items, key=lambda p: p['area'])
-
-    if not items:
-        return "<div class='empty-state'><div class='empty-state-text'>No properties match your filters.</div></div>"
-
-    cards = []
-    for i, p in enumerate(items):
-        tag_class, tag_label = _build_verdict(p['price'], p['pred_lower'], p['pred_median'], p['pred_upper'])
-        analysis = _build_price_analysis(p['features_scaled'], p['price'], p['pred_lower'], p['pred_median'], p['pred_upper'])
-
-        amenity_tags = ''.join(f"<span class='amenity-tag'>{a}</span>" for a in p['amenities'])
-
-        desc_short = _html.escape(p['desc'][:150] + ('...' if len(p['desc']) > 150 else '')) if p['desc'] else ''
-
-        card = f"""<div class='catalog-card' onclick="this.classList.toggle('expanded')">
+    return f"""<div class='catalog-card' data-idx='{catalog_idx}' onclick="this.classList.toggle('expanded')">
   <div class='card-header'>
     <div class='card-main'>
       <div class='card-title-row'>
-        <span class='card-title'>{_html.escape(p['township'] or p['company'].title())}</span>
+        <span class='card-title'>{title}</span>
         <span class='card-tag {tag_class}'>{tag_label}</span>
       </div>
       <div class='card-subtitle'>{p['sub_area'].title()} &middot; {p['property_type'].upper()} &middot; {p['area']:.0f} sq ft</div>
@@ -604,10 +581,38 @@ def build_catalog_html(sub_area_filter, bhk_filter, sort_by):
     {analysis}
   </div>
 </div>"""
-        cards.append(card)
+
+
+
+
+def build_catalog_html(sub_area_filter, bhk_filter, sort_by):
+    """Build the full catalog HTML from pre-computed data."""
+    items = list(enumerate(CATALOG))  # keep original indices
+
+    # Filter
+    if sub_area_filter and sub_area_filter != 'All':
+        items = [(i, p) for i, p in items if p['sub_area'] == normalize_text_value(sub_area_filter)]
+    if bhk_filter and bhk_filter != 'All':
+        items = [(i, p) for i, p in items if p['property_type'].upper() == bhk_filter.upper()]
+
+    # Sort
+    if sort_by == 'Price: Low to High':
+        items = sorted(items, key=lambda x: x[1]['price'])
+    elif sort_by == 'Price: High to Low':
+        items = sorted(items, key=lambda x: x[1]['price'], reverse=True)
+    elif sort_by == 'Best Deals First':
+        items = sorted(items, key=lambda x: x[1]['price'] - x[1]['pred_median'])
+    else:
+        items = sorted(items, key=lambda x: x[1]['area'])
+
+    if not items:
+        return "<div class='empty-state'><div class='empty-state-text'>No properties match your filters.</div></div>"
+
+    cards = [_build_card_html(p, idx) for idx, p in items]
 
     count_html = f"<div class='catalog-count'>{len(items)} properties</div>"
-    return count_html + "\n".join(cards)
+    return count_html + "<div class='catalog-grid'>" + "\n".join(cards) + "</div>"
+
 
 
 # --- Load CSS from file ---
@@ -751,6 +756,7 @@ with gr.Blocks(title="Pillow: Price Discovery for Pune Real Estate") as app:
             inputs=buyer_filter_inputs,
             outputs=catalog_output,
         )
+
 
     gr.HTML(
         "<div class='footer'>"

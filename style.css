@@ -1006,6 +1006,24 @@
     padding: 0 !important;
 }
 
+.catalog-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+}
+
+@media (max-width: 1024px) {
+    .catalog-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}
+
+@media (max-width: 640px) {
+    .catalog-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
 .catalog-count {
     font-family: 'Inter', sans-serif;
     font-size: 0.82rem;
@@ -1020,7 +1038,6 @@
     border: 1px solid #e2e6ea;
     border-radius: 14px;
     padding: 20px 24px;
-    margin-bottom: 10px;
     cursor: pointer;
     transition: box-shadow 0.2s ease, border-color 0.2s ease;
 }
@@ -1202,6 +1219,276 @@
 }
 
 .dark .card-range-label { color: #94a3b8; }
+
+/* ========== Compare Checkbox ========== */
+.compare-cb {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+    margin-bottom: 6px;
+}
+
+.compare-cb input[type='checkbox'] {
+    width: 14px;
+    height: 14px;
+    accent-color: #7c3aed;
+    cursor: pointer;
+}
+
+.compare-cb-label {
+    font-family: 'Inter', sans-serif;
+    font-size: 0.68rem;
+    font-weight: 500;
+    color: #94a3b8;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.catalog-card.compare-selected {
+    border-color: #7c3aed !important;
+    box-shadow: 0 0 0 2px rgba(124, 58, 237, 0.2), 0 2px 12px rgba(124, 58, 237, 0.1) !important;
+}
+
+.dark .catalog-card.compare-selected {
+    border-color: #8b5cf6 !important;
+    box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.25), 0 2px 12px rgba(139, 92, 246, 0.15) !important;
+}
+
+/* Screen-reader only — hides element visually but keeps it in DOM */
+.sr-only {
+    position: absolute !important;
+    width: 1px !important;
+    height: 1px !important;
+    overflow: hidden !important;
+    clip: rect(0, 0, 0, 0) !important;
+    white-space: nowrap !important;
+    border: 0 !important;
+    padding: 0 !important;
+    margin: 0 !important;
+}
+
+/* Compare button — hidden by default, JS shows it */
+#compare-btn-gradio {
+    display: none;
+    margin: 12px auto !important;
+    max-width: 300px;
+}
+
+/* ========== Comparison Panel ========== */
+.cmp-panel {
+    background: #fafbfc;
+    border: 2px solid #7c3aed;
+    border-radius: 16px;
+    padding: 28px;
+    margin-bottom: 20px;
+    box-shadow: 0 4px 20px rgba(124, 58, 237, 0.1);
+    animation: fadeInUp 0.4s ease-out;
+}
+
+.dark .cmp-panel {
+    background: #1a1d23;
+    border-color: #8b5cf6;
+    box-shadow: 0 4px 20px rgba(139, 92, 246, 0.15);
+}
+
+.cmp-sides {
+    display: flex;
+    gap: 0;
+    align-items: stretch;
+}
+
+.cmp-side {
+    flex: 1;
+    padding: 0 20px;
+}
+
+.cmp-divider {
+    width: 1px;
+    background: #e2e8f0;
+    flex-shrink: 0;
+}
+
+.dark .cmp-divider { background: #2d3139; }
+
+.cmp-title {
+    font-family: 'Inter', sans-serif;
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: #1e293b;
+    margin-bottom: 4px;
+}
+
+.dark .cmp-title { color: #e2e8f0; }
+
+.cmp-subtitle {
+    font-family: 'Inter', sans-serif;
+    font-size: 0.8rem;
+    color: #64748b;
+    margin-bottom: 8px;
+}
+
+.dark .cmp-subtitle { color: #8892a4; }
+
+.cmp-amenities {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-bottom: 14px;
+}
+
+.cmp-prices {
+    margin-bottom: 10px;
+}
+
+.cmp-price-row {
+    display: flex;
+    justify-content: space-between;
+    font-family: 'Inter', sans-serif;
+    font-size: 0.85rem;
+    color: #475569;
+    padding: 4px 0;
+}
+
+.dark .cmp-price-row { color: #94a3b8; }
+
+.cmp-price-val {
+    font-weight: 700;
+    color: #1e293b;
+}
+
+.dark .cmp-price-val { color: #e2e8f0; }
+
+.cmp-gap-row {
+    border-top: 1px solid #e2e8f0;
+    padding-top: 6px;
+    margin-top: 2px;
+}
+
+.dark .cmp-gap-row { border-top-color: #2d3139; }
+
+.cmp-gap-row .tag-overpriced { color: #dc2626; }
+.cmp-gap-row .tag-good { color: #059669; }
+.cmp-gap-row .tag-fair { color: #2563eb; }
+.cmp-gap-row .tag-caution { color: #d97706; }
+
+.dark .cmp-gap-row .tag-overpriced { color: #f87171; }
+.dark .cmp-gap-row .tag-good { color: #6ee7b7; }
+.dark .cmp-gap-row .tag-fair { color: #60a5fa; }
+.dark .cmp-gap-row .tag-caution { color: #fbbf24; }
+
+.cmp-tag {
+    display: inline-block;
+    font-family: 'Inter', sans-serif;
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 3px 12px;
+    border-radius: 20px;
+    margin-bottom: 12px;
+}
+
+.cmp-wf {
+    margin-top: 4px;
+}
+
+.cmp-wf-title {
+    font-family: 'Inter', sans-serif;
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: #94a3b8;
+    margin-bottom: 6px;
+}
+
+.cmp-wf-row {
+    display: flex;
+    justify-content: space-between;
+    font-family: 'Inter', sans-serif;
+    font-size: 0.78rem;
+    padding: 3px 0;
+    color: #475569;
+}
+
+.dark .cmp-wf-row { color: #8892a4; }
+
+.cmp-wf-val {
+    font-weight: 600;
+    color: #2563eb;
+}
+
+.dark .cmp-wf-val { color: #60a5fa; }
+
+/* ========== Diff Section ========== */
+.cmp-diff-section {
+    margin-top: 20px;
+    padding-top: 20px;
+    border-top: 1px solid #e2e8f0;
+}
+
+.dark .cmp-diff-section { border-top-color: #2d3139; }
+
+.cmp-diff-title {
+    font-family: 'Inter', sans-serif;
+    font-size: 1rem;
+    font-weight: 700;
+    color: #1e293b;
+    margin-bottom: 10px;
+    text-align: center;
+}
+
+.dark .cmp-diff-title { color: #e2e8f0; }
+
+.cmp-diff-header,
+.cmp-diff-row {
+    display: grid;
+    grid-template-columns: 1fr 70px 80px 70px;
+    gap: 8px;
+    align-items: center;
+    font-family: 'Inter', sans-serif;
+    font-size: 0.78rem;
+    padding: 5px 0;
+}
+
+.cmp-diff-header {
+    font-weight: 600;
+    color: #94a3b8;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    border-bottom: 1px solid #e2e8f0;
+    padding-bottom: 6px;
+    margin-bottom: 2px;
+}
+
+.dark .cmp-diff-header { border-bottom-color: #2d3139; }
+
+.cmp-diff-label {
+    color: #475569;
+    font-weight: 500;
+}
+
+.dark .cmp-diff-label { color: #94a3b8; }
+
+.cmp-diff-a, .cmp-diff-b {
+    text-align: center;
+    font-weight: 600;
+    color: #1e293b;
+}
+
+.dark .cmp-diff-a, .dark .cmp-diff-b { color: #e2e8f0; }
+
+.cmp-diff-arrow {
+    text-align: center;
+    font-weight: 700;
+    font-size: 0.75rem;
+}
+
+.cmp-diff-pos { color: #2563eb; }
+.cmp-diff-neg { color: #dc2626; }
+
+.dark .cmp-diff-pos { color: #60a5fa; }
+.dark .cmp-diff-neg { color: #f87171; }
 
 /* Disabled (greyed-out) checkboxes */
 .card-panel input[type='checkbox']:disabled {
