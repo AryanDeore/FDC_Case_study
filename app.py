@@ -409,9 +409,8 @@ def _build_price_analysis(features_scaled, listing_price, pred_lower, pred_media
     gap_card = _build_gap_card(listing_price, pred_median, pred_lower, pred_upper)
     sentence = _build_sentence_explanation(contributions, pred_median)
     waterfall = _build_stacked_waterfall(contributions, pred_median)
-    table = _build_contrib_table(contributions, pred_median)
 
-    return f"{gap_card}{sentence}{waterfall}{table}"
+    return f"{gap_card}{sentence}{waterfall}"
 
 
 def _build_verdict(listing_price, pred_lower, pred_median, pred_upper):
